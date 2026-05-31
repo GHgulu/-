@@ -1,0 +1,8 @@
+# 编译产物
+*.exe
+*.out
+*.o
+
+# 临时文件
+tmp/
+tempCodeRunnerFile.c
