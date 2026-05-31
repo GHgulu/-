@@ -519,12 +519,44 @@ void music_control(int *music_state)
 /* 停止音乐（程序使用，放在 cleanup 或退出时） */
 void music_stop()
 {
-    system("killall -SIGINT madplay 2>/dev/null");
+    system("killall -SIGINT madplay");
     printf("-> 音乐已停止\n");
 }
 
+/* 辅助：加载 BMP 到 32 位 RGB 缓冲区（已修正上下颠倒） */
+int bmp_load_to_buf(const char *path, int *buf)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { perror("打开 BMP 失败"); return -1; }
+
+    lseek(fd, 54, SEEK_SET);
+
+    char raw[LCD_WIDTH * LCD_HEIGHT * 3];
+    int temp[LCD_WIDTH * LCD_HEIGHT];
+    memset(raw, 0, sizeof(raw));
+    memset(temp, 0, sizeof(temp));
+
+    int ret = read(fd, raw, sizeof(raw));
+    close(fd);
+    if (ret < (int)sizeof(raw))
+        printf("警告: 读取 %d 字节, 预期 %d\n", ret, (int)sizeof(raw));
+
+    /* 24位 BGR → 32位 RGB */
+    int i, j;
+    for (i = 0, j = 0; i < LCD_WIDTH * LCD_HEIGHT; i++, j += 3)
+        temp[i] = (raw[j + 2] << 16) | (raw[j + 1] << 8) | raw[j];
+
+    /* 上下翻转修正 */
+    int x, y;
+    for (y = 0; y < LCD_HEIGHT; y++)
+        for (x = 0; x < LCD_WIDTH; x++)
+            buf[LCD_WIDTH * y + x] = temp[(LCD_HEIGHT - 1 - y) * LCD_WIDTH + x];
+
+    return 0;
+}
+
 /* ==========================================
- * BMP 图片显示
+ * BMP 图片显示（无特效，用于主界面/解锁界面）
  * ========================================== */
 void show_bmp(const char *path)
 {
@@ -559,6 +591,245 @@ void show_bmp(const char *path)
     }
 
     printf("成功显示: %s\n", path);
+}
+
+/* ==========================================
+ * 图片切换特效（11 种动画效果）
+ * 共用 bmp_load_to_buf() 加载图片后，逐像素动画写入 lcd_ptr
+ * ========================================== */
+
+/* 特效编号 */
+#define EFFECT_CIRCULAR_SPREAD   0   /* 圆形扩散 */
+#define EFFECT_CIRCULAR_SHRINK   1   /* 圆形收缩 */
+#define EFFECT_FLY_DOWN          2   /* 向下飞入 */
+#define EFFECT_FLY_UP            3   /* 向上飞入 */
+#define EFFECT_FLY_LEFT          4   /* 向左飞入 */
+#define EFFECT_FLY_RIGHT         5   /* 向右飞入 */
+#define EFFECT_H_BLINDS          6   /* 横百叶窗 */
+#define EFFECT_V_BLINDS          7   /* 竖百叶窗 */
+#define EFFECT_LR_MERGE          8   /* 左右相合 */
+#define EFFECT_CENTER_SPREAD     9   /* 中间展开 */
+#define EFFECT_DIAGONAL          10  /* 斜方块 */
+#define EFFECT_COUNT             11
+
+/* 1) 圆形扩散 */
+void effect_circular_spread(const char *path)
+{
+    int buf[480 * 800];
+    memset(buf, 0, sizeof(buf));
+    if (bmp_load_to_buf(path, buf) < 0) return;
+
+    int i, j, k;
+    for (k = 0; k < 467; k += 3)
+    {
+        for (i = 0; i < 480; i++)
+            for (j = 0; j < 800; j++)
+                if ((j - 400) * (j - 400) + (i - 240) * (i - 240) <= k * k)
+                    lcd_ptr[800 * i + j] = buf[800 * i + j];
+    }
+}
+
+/* 2) 圆形收缩 */
+void effect_circular_shrink(const char *path)
+{
+    int buf[480 * 800];
+    memset(buf, 0, sizeof(buf));
+    if (bmp_load_to_buf(path, buf) < 0) return;
+
+    int i, j, k;
+    for (k = 468; k >= 0; k -= 3)
+    {
+        for (i = 0; i < 480; i++)
+            for (j = 0; j < 800; j++)
+                if ((j - 400) * (j - 400) + (i - 240) * (i - 240) >= k * k)
+                    lcd_ptr[800 * i + j] = buf[800 * i + j];
+    }
+}
+
+/* 3) 向下飞入 */
+void effect_fly_down(const char *path)
+{
+    int buf[480 * 800];
+    memset(buf, 0, sizeof(buf));
+    if (bmp_load_to_buf(path, buf) < 0) return;
+
+    int i, j;
+    for (i = 0; i < 480; i++)
+    {
+        for (j = 0; j < 800; j++)
+            lcd_ptr[800 * i + j] = buf[800 * i + j];
+        usleep(1000);
+    }
+}
+
+/* 4) 向上飞入 */
+void effect_fly_up(const char *path)
+{
+    int buf[480 * 800];
+    memset(buf, 0, sizeof(buf));
+    if (bmp_load_to_buf(path, buf) < 0) return;
+
+    int i, j;
+    for (i = 479; i >= 0; i--)
+    {
+        for (j = 0; j < 800; j++)
+            lcd_ptr[800 * i + j] = buf[800 * i + j];
+        usleep(500);
+    }
+}
+
+/* 5) 向左飞入 */
+void effect_fly_left(const char *path)
+{
+    int buf[480 * 800];
+    memset(buf, 0, sizeof(buf));
+    if (bmp_load_to_buf(path, buf) < 0) return;
+
+    int i, j;
+    for (j = 799; j >= 0; j--)
+    {
+        for (i = 0; i < 480; i++)
+            lcd_ptr[800 * i + j] = buf[800 * i + j];
+        usleep(500);
+    }
+}
+
+/* 6) 向右飞入 */
+void effect_fly_right(const char *path)
+{
+    int buf[480 * 800];
+    memset(buf, 0, sizeof(buf));
+    if (bmp_load_to_buf(path, buf) < 0) return;
+
+    int i, j;
+    for (j = 0; j < 800; j++)
+    {
+        for (i = 0; i < 480; i++)
+            lcd_ptr[800 * i + j] = buf[800 * i + j];
+        usleep(500);
+    }
+}
+
+/* 7) 横百叶窗 */
+void effect_horizontal_blinds(const char *path)
+{
+    int buf[480 * 800];
+    memset(buf, 0, sizeof(buf));
+    if (bmp_load_to_buf(path, buf) < 0) return;
+
+    int i, j, k;
+    for (j = 0; j < 100; j++)
+    {
+        for (i = 0; i < 480; i++)
+            for (k = 0; k < 8; k++)
+                lcd_ptr[800 * i + j + k * 100] = buf[800 * i + j + k * 100];
+        usleep(500);
+    }
+}
+
+/* 8) 竖百叶窗 */
+void effect_vertical_blinds(const char *path)
+{
+    int buf[480 * 800];
+    memset(buf, 0, sizeof(buf));
+    if (bmp_load_to_buf(path, buf) < 0) return;
+
+    int i, j, k;
+    for (i = 0; i < 60; i++)
+    {
+        for (j = 0; j < 800; j++)
+            for (k = 0; k < 8; k++)
+                lcd_ptr[800 * (i + k * 60) + j] = buf[800 * (i + k * 60) + j];
+        usleep(500);
+    }
+}
+
+/* 9) 左右相合 */
+void effect_left_right_merge(const char *path)
+{
+    int buf[480 * 800];
+    memset(buf, 0, sizeof(buf));
+    if (bmp_load_to_buf(path, buf) < 0) return;
+
+    int block, i, j;
+    for (block = 0; block < 10; block++)
+    {
+        for (i = 40 * block; i < (block + 1) * 40; i++)
+            for (j = 0; j < 480; j++)
+                lcd_ptr[j * 800 + i] = buf[j * 800 + i];
+        for (i = 799 - block * 40; i > 799 - (block + 1) * 40; i--)
+            for (j = 0; j < 480; j++)
+                lcd_ptr[j * 800 + i] = buf[j * 800 + i];
+        usleep(100000);
+    }
+}
+
+/* 10) 中间展开 */
+void effect_center_spread(const char *path)
+{
+    int buf[480 * 800];
+    memset(buf, 0, sizeof(buf));
+    if (bmp_load_to_buf(path, buf) < 0) return;
+
+    int i, j;
+    for (i = 0; i < 400; i++)
+    {
+        for (j = 0; j < 480; j++)
+        {
+            lcd_ptr[800 * j + 400 + i] = buf[800 * j + 400 + i];
+            lcd_ptr[800 * j + 399 - i] = buf[800 * j + 399 - i];
+        }
+        usleep(500);
+    }
+}
+
+/* 11) 斜方块 */
+void effect_diagonal_blocks(const char *path)
+{
+    int buf[480 * 800];
+    memset(buf, 0, sizeof(buf));
+    if (bmp_load_to_buf(path, buf) < 0) return;
+
+    int i, j, k, m, n;
+    for (k = 0; k <= 14; k++)
+    {
+        for (i = 0; i < 8; i++)
+        {
+            for (j = 0; j < 8; j++)
+            {
+                if (i + j <= k)
+                {
+                    for (m = 100 * i; m < 100 * (i + 1); m++)
+                        for (n = 60 * j; n < 60 * (j + 1); n++)
+                            lcd_ptr[n * 800 + m] = buf[n * 800 + m];
+                    usleep(200);
+                }
+            }
+        }
+    }
+}
+
+/* 特效分发函数：根据 effect_id 调用对应特效 */
+void show_bmp_with_effect(const char *path, int effect_id)
+{
+    printf("特效切换(%d): %s\n", effect_id, path);
+
+    switch (effect_id)
+    {
+        case EFFECT_CIRCULAR_SPREAD:  effect_circular_spread(path);    break;
+        case EFFECT_CIRCULAR_SHRINK:  effect_circular_shrink(path);    break;
+        case EFFECT_FLY_DOWN:         effect_fly_down(path);            break;
+        case EFFECT_FLY_UP:           effect_fly_up(path);              break;
+        case EFFECT_FLY_LEFT:         effect_fly_left(path);            break;
+        case EFFECT_FLY_RIGHT:        effect_fly_right(path);           break;
+        case EFFECT_H_BLINDS:         effect_horizontal_blinds(path);   break;
+        case EFFECT_V_BLINDS:         effect_vertical_blinds(path);     break;
+        case EFFECT_LR_MERGE:         effect_left_right_merge(path);    break;
+        case EFFECT_CENTER_SPREAD:    effect_center_spread(path);       break;
+        case EFFECT_DIAGONAL:         effect_diagonal_blocks(path);     break;
+        default:                      effect_circular_spread(path);     break;
+    }
+    printf("特效完成\n");
 }
 
 /* ==========================================
@@ -624,6 +895,7 @@ int main()
     int music_state = MUSIC_STOPPED;
     char password_input[PASSWORD_LEN + 1] = {0};  /* 密码输入缓冲区 */
     int  pw_count = 0;                             /* 已输入密码位数 */
+    int  effect_id = 0;                            /* 当前特效编号（循环使用） */
 
     show_page(UNLOCK_PATH, state, music_state, photo_index, pw_count);
     printf("=== 数码相册启动 ===\n");
@@ -756,9 +1028,13 @@ int main()
                 if (in_rect(lcd_x, lcd_y, 310, 160, 490, 320))
                 {
                     photo_index = 0;
-                    show_page(photo_list[photo_index], STATE_ALBUM, music_state, photo_index, pw_count);
+                    show_bmp_with_effect(photo_list[photo_index], effect_id);
+                    effect_id = (effect_id + 1) % EFFECT_COUNT;
+                    draw_album_ui();
+                    draw_photo_decorations(photo_index);
+                    draw_music_button(music_state);
                     state = STATE_ALBUM;
-                    printf("-> 进入相册，第 %d/%d 张\n", photo_index + 1, PHOTO_COUNT);
+                    printf("-> 进入相册，第 %d/%d 张，特效 %d\n", photo_index + 1, PHOTO_COUNT, effect_id - 1);
                 }
             }
             /* ---- 相册浏览逻辑 ---- */
@@ -769,7 +1045,11 @@ int main()
                 {
                     photo_index--;
                     if (photo_index < 0) photo_index = PHOTO_COUNT - 1;
-                    show_page(photo_list[photo_index], STATE_ALBUM, music_state, photo_index, pw_count);
+                    show_bmp_with_effect(photo_list[photo_index], effect_id);
+                    effect_id = (effect_id + 1) % EFFECT_COUNT;
+                    draw_album_ui();
+                    draw_photo_decorations(photo_index);
+                    draw_music_button(music_state);
                     printf("-> 上一张，第 %d/%d 张\n", photo_index + 1, PHOTO_COUNT);
                 }
                 /* 右侧窄条 — 下一张 */
@@ -777,7 +1057,11 @@ int main()
                 {
                     photo_index++;
                     if (photo_index >= PHOTO_COUNT) photo_index = 0;
-                    show_page(photo_list[photo_index], STATE_ALBUM, music_state, photo_index, pw_count);
+                    show_bmp_with_effect(photo_list[photo_index], effect_id);
+                    effect_id = (effect_id + 1) % EFFECT_COUNT;
+                    draw_album_ui();
+                    draw_photo_decorations(photo_index);
+                    draw_music_button(music_state);
                     printf("-> 下一张，第 %d/%d 张\n", photo_index + 1, PHOTO_COUNT);
                 }
                 /* 底部返回按钮 — 返回主界面 */
